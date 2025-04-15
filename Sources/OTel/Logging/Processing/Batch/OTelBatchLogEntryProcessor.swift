@@ -20,26 +20,27 @@ import ServiceLifecycle
 ///
 /// [OpenTelemetry Specification: Batching processor](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.20.0/specification/logs/sdk.md#batching-processor)
 @_spi(Logging)
-public actor OTelBatchLogEntryProcessor<Exporter: OTelLogEntryExporter, Clock: _Concurrency.Clock>:
-    OTelLogEntryProcessor,
+public actor OTelBatchLogRecordProcessor<Exporter: OTelLogRecordExporter, Clock: _Concurrency.Clock>:
+    OTelLogRecordProcessor,
     Service,
     CustomStringConvertible
-where Clock.Duration == Duration
+    where Clock.Duration == Duration
 {
-    public nonisolated let description = "OTelBatchLogEntryProcessor"
+    public nonisolated let description = "OTelBatchLogRecordProcessor"
 
-    internal /* for testing */ private(set) var buffer: Deque<OTelLogEntry>
+    internal /* for testing */ private(set) var buffer: Deque<OTelLogRecord>
 
     private let exporter: Exporter
-    private let configuration: OTelBatchLogEntryProcessorConfiguration
+    private let configuration: OTelBatchLogRecordProcessorConfiguration
     private let clock: Clock
-    private let logStream: AsyncStream<OTelLogEntry>
-    private let logContinuation: AsyncStream<OTelLogEntry>.Continuation
+    private let logger = Logger(label: "OTelBatchLogRecordProcessor")
+    private let logStream: AsyncStream<OTelLogRecord>
+    private let logContinuation: AsyncStream<OTelLogRecord>.Continuation
     private let explicitTickStream: AsyncStream<Void>
     private let explicitTick: AsyncStream<Void>.Continuation
 
     @_spi(Testing)
-    public init(exporter: Exporter, configuration: OTelBatchLogEntryProcessorConfiguration, clock: Clock) {
+    public init(exporter: Exporter, configuration: OTelBatchLogRecordProcessorConfiguration, clock: Clock) {
         self.exporter = exporter
         self.configuration = configuration
         self.clock = clock
@@ -49,15 +50,15 @@ where Clock.Duration == Duration
         (logStream, logContinuation) = AsyncStream.makeStream()
     }
 
-    nonisolated public func onLog(_ log: OTelLogEntry) {
-        logContinuation.yield(log)
+    public nonisolated func onEmit(_ record: inout OTelLogRecord) {
+        logContinuation.yield(record)
     }
 
-    private func _onLog(_ log: OTelLogEntry) {
+    private func _onLog(_ log: OTelLogRecord) {
         buffer.append(log)
 
-        if self.buffer.count == self.configuration.maximumQueueSize {
-            self.explicitTick.yield()
+        if buffer.count == configuration.maximumQueueSize {
+            explicitTick.yield()
         }
     }
 
@@ -65,25 +66,31 @@ where Clock.Duration == Duration
         let timerSequence = AsyncTimerSequence(interval: configuration.scheduleDelay, clock: clock).map { _ in }
         let mergedSequence = merge(timerSequence, explicitTickStream).cancelOnGracefulShutdown()
 
-        await withThrowingTaskGroup(of: Void.self) { taskGroup in
-            taskGroup.addTask {
-                for await log in self.logStream {
-                    await self._onLog(log)
+        await withTaskCancellationOrGracefulShutdownHandler {
+            await withThrowingTaskGroup(of: Void.self) { taskGroup in
+                taskGroup.addTask {
+                    for await log in self.logStream {
+                        await self._onLog(log)
+                    }
                 }
-            }
 
-            taskGroup.addTask {
-                for try await _ in mergedSequence where !(await self.buffer.isEmpty) {
-                    await self.tick()
+                taskGroup.addTask {
+                    for try await _ in mergedSequence where await !(self.buffer.isEmpty) {
+                        await self.tick()
+                    }
                 }
-            }
 
-            try? await taskGroup.next()
-            taskGroup.cancelAll()
+                try? await taskGroup.next()
+                taskGroup.cancelAll()
+            }
+        } onCancelOrGracefulShutdown: {
+            self.logContinuation.finish()
         }
 
+        logger.debug("Shutting down.")
         try? await forceFlush()
         await exporter.shutdown()
+        logger.debug("Shut down.")
     }
 
     public func forceFlush() async throws {
@@ -95,7 +102,7 @@ where Clock.Duration == Duration
         if !buffer.isEmpty {
             buffer.removeAll()
 
-            await withThrowingTaskGroup(of: Void.self) { group in
+            try await withThrowingTaskGroup(of: Void.self) { group in
                 for batch in batches {
                     group.addTask { await self.export(batch) }
                 }
@@ -105,8 +112,10 @@ where Clock.Duration == Duration
                     throw CancellationError()
                 }
 
-                try? await group.next()
-                group.cancelAll()
+                defer { group.cancelAll() }
+                // Don't cancel unless it's an error
+                // A single export shouldn't cancel the other exports
+                try await group.next()
             }
         }
 
@@ -129,25 +138,19 @@ where Clock.Duration == Duration
         }
     }
 
-    private func export(_ batch: some Collection<OTelLogEntry> & Sendable) async {
-        do {
-            try await exporter.export(batch)
-        } catch is CancellationError {
-            // No-op
-        } catch {
-            // TODO: Should we emit this error somewhere?
-        }
+    private func export(_ batch: some Collection<OTelLogRecord> & Sendable) async {
+        try? await exporter.export(batch)
     }
 }
 
 @_spi(Logging)
-extension OTelBatchLogEntryProcessor where Clock == ContinuousClock {
+extension OTelBatchLogRecordProcessor where Clock == ContinuousClock {
     /// Create a batch log processor exporting log batches via the given log exporter.
     ///
     /// - Parameters:
     ///   - exporter: The log exporter to receive batched logs to export.
     ///   - configuration: Further configuration parameters to tweak the batching behavior.
-    public init(exporter: Exporter, configuration: OTelBatchLogEntryProcessorConfiguration) {
+    public init(exporter: Exporter, configuration: OTelBatchLogRecordProcessorConfiguration) {
         self.init(exporter: exporter, configuration: configuration, clock: .continuous)
     }
 }

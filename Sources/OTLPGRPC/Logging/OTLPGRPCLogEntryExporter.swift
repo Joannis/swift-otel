@@ -21,24 +21,32 @@ import NIOSSL
 
 /// Exports logs to an OTel collector using OTLP/gRPC.
 @_spi(Logging)
-public final class OTLPGRPCLogEntryExporter: OTelLogEntryExporter {
-    private let configuration: OTLPGRPCLogEntryExporterConfiguration
+public final class OTLPGRPCLogEntryExporter: OTelLogRecordExporter {
+    private let configuration: OTLPGRPCLogRecordExporterConfiguration
     private let connection: ClientConnection
     private let client: Opentelemetry_Proto_Collector_Logs_V1_LogsServiceAsyncClient
     private let logger = Logger(label: String(describing: OTLPGRPCLogEntryExporter.self))
 
     public init(
-        configuration: OTLPGRPCLogEntryExporterConfiguration,
+        configuration: OTLPGRPCLogRecordExporterConfiguration,
         group: EventLoopGroup = MultiThreadedEventLoopGroup.singleton,
         requestLogger: Logger = ._otelDisabled,
         backgroundActivityLogger: Logger = ._otelDisabled
     ) {
         self.configuration = configuration
 
-        var connectionConfiguration = ClientConnection.Configuration.default(
-            target: .host(configuration.endpoint.host, port: configuration.endpoint.port),
-            eventLoopGroup: group
-        )
+        
+        var connectionConfiguration = ClientConnection.Configuration(target: .host(configuration.endpoint.host, port: configuration.endpoint.port),
+                                                                     eventLoopGroup: group,
+                                                                     tls: .init(configuration: .clientDefault),
+                                                                     backgroundActivityLogger: requestLogger)
+        
+        if configuration.endpoint.isInsecure {
+            connectionConfiguration = ClientConnection.Configuration.default(
+                target: .host(configuration.endpoint.host, port: configuration.endpoint.port),
+                eventLoopGroup: group
+            )
+        }
 
         if configuration.endpoint.isInsecure {
             logger.debug("Using insecure connection.", metadata: [
@@ -68,16 +76,17 @@ public final class OTLPGRPCLogEntryExporter: OTelLogEntryExporter {
         )
     }
 
-    public func export(_ batch: some Collection<OTelLogEntry> & Sendable) async throws {
+    public func export(_ batch: some Collection<OTelLogRecord> & Sendable) async throws {
         if case .shutdown = connection.connectivity.state {
-            throw OTelLogEntryExporterAlreadyShutDownError()
+            throw OTelLogRecordExporterAlreadyShutDownError()
         }
 
-        guard !batch.isEmpty else { return }
+        guard let resource = batch.first?.resource else { return }
 
         let request = Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest.with { request in
             request.resourceLogs = [
                 Opentelemetry_Proto_Logs_V1_ResourceLogs.with { resourceLog in
+                    resourceLog.resource.attributes = .init(resource.loggerMetadata)
                     resourceLog.scopeLogs = [
                         Opentelemetry_Proto_Logs_V1_ScopeLogs.with { scopeLog in
                             scopeLog.logRecords = batch.map { log in
@@ -102,11 +111,10 @@ public final class OTLPGRPCLogEntryExporter: OTelLogEntryExporter {
                                     case .error: "ERROR"
                                     case .critical: "CRITICAL"
                                     }
-                                    if let metadata = log.metadata {
-                                        logRecord.attributes = .init(metadata)
-                                    }
+                                    
+                                    logRecord.attributes = .init(log.metadata)
                                     logRecord.body = .with { body in
-                                        body.stringValue = log.body
+                                        body.stringValue = "\(log.body)"
                                     }
                                 }
                             }
@@ -136,7 +144,7 @@ extension [Opentelemetry_Proto_Common_V1_KeyValue] {
         self = metadata.map { key, value in
             return .with { attribute in
                 attribute.key = key
-                attribute.value = .init(value)
+                attribute.value.stringValue = value.description
             }
         }
     }

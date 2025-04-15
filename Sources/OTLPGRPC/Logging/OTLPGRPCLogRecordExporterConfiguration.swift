@@ -15,7 +15,7 @@ import NIOHPACK
 import OTel
 
 @_spi(Logging)
-public struct OTLPGRPCLogEntryExporterConfiguration: Sendable {
+public struct OTLPGRPCLogRecordExporterConfiguration: Sendable {
     let endpoint: OTLPGRPCEndpoint
     let headers: HPACKHeaders
 

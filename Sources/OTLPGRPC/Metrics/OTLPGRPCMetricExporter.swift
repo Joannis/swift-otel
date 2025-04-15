@@ -34,11 +34,18 @@ public final class OTLPGRPCMetricExporter: OTelMetricExporter {
         backgroundActivityLogger: Logger = ._otelDisabled
     ) {
         self.configuration = configuration
-
-        var connectionConfiguration = ClientConnection.Configuration.default(
-            target: .host(configuration.endpoint.host, port: configuration.endpoint.port),
-            eventLoopGroup: group
-        )
+        
+        var connectionConfiguration = ClientConnection.Configuration(target: .host(configuration.endpoint.host, port: configuration.endpoint.port),
+                                                                     eventLoopGroup: group,
+                                                                     tls: .init(configuration: .clientDefault),
+                                                                     backgroundActivityLogger: requestLogger)
+        
+        if configuration.endpoint.isInsecure {
+            connectionConfiguration = ClientConnection.Configuration.default(
+                target: .host(configuration.endpoint.host, port: configuration.endpoint.port),
+                eventLoopGroup: group
+            )
+        }
 
         if configuration.endpoint.isInsecure {
             logger.debug("Using insecure connection.", metadata: [

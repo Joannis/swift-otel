@@ -20,21 +20,42 @@ import Tracing
 
 @_spi(Logging)
 public struct OTelLogHandler: Sendable, LogHandler {
-    public var metadata: Logging.Logger.Metadata
-    public var logLevel: Logging.Logger.Level
-    private let processor: any OTelLogEntryProcessor
+    public var metadata: Logger.Metadata
+    public var logLevel: Logger.Level
+    private let processor: any OTelLogRecordProcessor
+    private let resource: OTelResource
+    private let nanosecondsSinceEpoch: @Sendable () -> UInt64
 
     public init(
-        processor: any OTelLogEntryProcessor,
+        processor: any OTelLogRecordProcessor,
         logLevel: Logger.Level,
+        resource: OTelResource,
         metadata: Logger.Metadata = [:]
+    ) {
+        self.init(
+            processor: processor,
+            logLevel: logLevel,
+            resource: resource,
+            metadata: metadata,
+            nanosecondsSinceEpoch: { DefaultTracerClock.now.nanosecondsSinceEpoch }
+        )
+    }
+
+    package init(
+        processor: any OTelLogRecordProcessor,
+        logLevel: Logger.Level,
+        resource: OTelResource,
+        metadata: Logger.Metadata,
+        nanosecondsSinceEpoch: @escaping @Sendable () -> UInt64
     ) {
         self.processor = processor
         self.logLevel = logLevel
+        self.resource = resource
         self.metadata = metadata
+        self.nanosecondsSinceEpoch = nanosecondsSinceEpoch
     }
 
-    public subscript(metadataKey key: String) -> Logging.Logger.Metadata.Value? {
+    public subscript(metadataKey key: String) -> Logger.Metadata.Value? {
         get { metadata[key] }
         set { metadata[key] = newValue }
     }
@@ -48,15 +69,48 @@ public struct OTelLogHandler: Sendable, LogHandler {
         function: String,
         line: UInt
     ) {
-        let instant = DefaultTracerClock().now
+        let codeMetadata: Logger.Metadata = [
+            "code.filepath": "\(file)",
+            "code.function": "\(function)",
+            "code.lineno": "\(line)",
+        ]
+        
+        let effectiveMetadata: Logger.Metadata
+        if let metadata {
+            effectiveMetadata = codeMetadata
+                .merging(self.metadata, uniquingKeysWith: { $1 })
+                .merging(metadata, uniquingKeysWith: { $1 })
+        } else if !self.metadata.isEmpty {
+            effectiveMetadata = codeMetadata.merging(self.metadata, uniquingKeysWith: { $1 })
+        } else {
+            effectiveMetadata = codeMetadata
+        }
 
-        let message = OTelLogEntry(
-            body: message.description,
+        var record = OTelLogRecord(
+            body: message,
             level: level,
-            metadata: metadata,
-            timeNanosecondsSinceEpoch: instant.nanosecondsSinceEpoch
+            metadata: effectiveMetadata,
+            timeNanosecondsSinceEpoch: nanosecondsSinceEpoch(),
+            resource: resource,
+            spanContext: ServiceContext.current?.spanContext
         )
 
-        processor.onLog(message)
+        processor.onEmit(&record)
+    }
+}
+
+@_spi(Logging)
+public extension OTelResource {
+    /// Extracts the resource's attributes as Logger.Metadata.
+    ///
+    /// This extension converts each attribute value to its string representation.
+    var loggerMetadata: Logger.Metadata {
+        var metadata: Logger.Metadata = [:]
+        attributes.forEach { key, value in
+            if case let .string(stringValue) = value {
+                metadata[key] = "\(stringValue)"
+            }
+        }
+        return metadata
     }
 }

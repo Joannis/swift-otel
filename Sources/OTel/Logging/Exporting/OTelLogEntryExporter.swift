@@ -11,21 +11,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// A span exporter receives batches of processed spans to export them, e.g. by sending them over the network.
+/// A span exporter receives batches of processed logs to export them, e.g. by sending them over the network.
 ///
-/// [OpenTelemetry specification: Span exporter](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.20.0/specification/trace/sdk.md#span-exporter)
+/// [OpenTelemetry specification: Log exporter](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.20.0/specification/logs/sdk.md#logrecordexporter)
 @_spi(Logging)
-public protocol OTelLogEntryExporter: Sendable {
-    /// Export the given batch of spans.
+public protocol OTelLogRecordExporter: Sendable {
+    /// Export the given batch of logs.
     ///
-    /// - Parameter batch: A batch of spans to export.
-    func export(_ batch: some Collection<OTelLogEntry> & Sendable) async throws
+    /// - Parameter batch: A batch of logs to export.
+    func export(_ batch: some Collection<OTelLogRecord> & Sendable) async throws
 
-    /// Force the span exporter to export any previously received spans as soon as possible.
+    /// Force the log exporter to export any previously received logs as soon as possible.
     func forceFlush() async throws
 
-    /// Shut down the span exporter.
-    ///a
+    /// Shut down the log exporter.
+    ///
     /// This method gives exporters a chance to wrap up existing work such as finishing in-flight exports while not allowing new ones anymore.
     /// Once this method returns, the exporter is to be considered shut down and further invocations of ``export(_:)``
     /// are expected to fail.
@@ -34,7 +34,7 @@ public protocol OTelLogEntryExporter: Sendable {
 
 /// An error indicating that a given exporter has already been shut down while receiving an additional batch of spans to export.
 @_spi(Logging)
-public struct OTelLogEntryExporterAlreadyShutDownError: Error {
+public struct OTelLogRecordExporterAlreadyShutDownError: Error {
     /// Initialize the error.
     public init() {}
 }

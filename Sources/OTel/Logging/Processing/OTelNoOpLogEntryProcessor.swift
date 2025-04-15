@@ -15,8 +15,9 @@ import ServiceContextModule
 
 /// A span processor that ignores all operations, used when no spans should be processed.
 @_spi(Logging)
-public struct OTelNoOpLogEntryProcessor: OTelLogEntryProcessor, CustomStringConvertible {
-    public let description = "OTelNoOpSpanProcessor"
+public struct OTelNoOpLogEntryProcessor: OTelLogRecordProcessor, CustomStringConvertible {
+
+    public let description = "OTelNoOpLogProcessor"
 
     private let stream: AsyncStream<Void>
     private let continuation: AsyncStream<Void>.Continuation
@@ -30,7 +31,7 @@ public struct OTelNoOpLogEntryProcessor: OTelLogEntryProcessor, CustomStringConv
         for await _ in stream.cancelOnGracefulShutdown() {}
     }
 
-    public func onLog(_ log: OTelLogEntry) {
+    public func onEmit(_ record: inout OTelLogRecord) {
         // no-op
     }
 
